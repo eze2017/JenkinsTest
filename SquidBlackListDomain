@@ -1,0 +1,155 @@
+#! /usr/bin/python
+
+#importing modules
+import logging
+import logging.handlers
+import argparse
+import boto3
+import shutil
+import json
+import hashlib
+from boto3 import session
+from botocore.exceptions import ClientError
+import requests
+import sys
+import os
+import ConfigParser
+import crontab
+from datetime import datetime
+## DEFAULTS:
+
+LOG_FILENAME= "/tmp/squidAclservice.log"
+LOG_LEVEL=logging.INFO
+
+# Define and parse command line arguments
+
+parser = argparse.ArgumentParser(description="Squid ACL BLOCK Service ")
+parser.add_argument("-l", "--log", help="file to write log to (default '" + LOG_FILENAME + "')")
+
+# Define and parse command line arguments
+parser = argparse.ArgumentParser(description="Python virus scan service")
+parser.add_argument("-l", "--log", help="file to write log to (default '" + LOG_FILENAME + "')")
+
+# If the log file is specified on the command line then override the default
+args = parser.parse_args()
+if args.log:
+        LOG_FILENAME = args.log
+
+# Configure logging to log to a file, making a new file at midnight and keeping the last 3 day's data
+# Give the logger a unique name (good practice)
+logger = logging.getLogger(__name__)
+# Set the log level to LOG_LEVEL
+logger.setLevel(LOG_LEVEL)
+# Make a handler that writes to a file, making a new file at midnight and keeping 3 backups
+handler = logging.handlers.TimedRotatingFileHandler(LOG_FILENAME, when="midnight", backupCount=3)
+# Format each log message like this
+formatter = logging.Formatter('%(asctime)s %(levelname)-8s %(message)s')
+# Attach the formatter to the handler
+handler.setFormatter(formatter)
+# Attach the handler to the logger
+logger.addHandler(handler)
+
+# Make a class we can use to capture stdout and sterr in the log
+class MyLogger(object):
+        def __init__(self, logger, level):
+                """Needs a logger and a logger level."""
+                self.logger = logger
+                self.level = level
+
+        def write(self, message):
+                # Only log if there is a message (not just a new line)
+                if message.rstrip() != "":
+                        self.logger.log(self.level, message.rstrip())
+
+# Replace stdout with logging to file at INFO level
+sys.stdout = MyLogger(logger, logging.INFO)
+# Replace stderr with logging to file at ERROR level
+sys.stderr = MyLogger(logger, logging.ERROR)
+
+# Setting Default Dir
+acldir='/etc/squid/acls'
+
+
+def SquidAclDirCheck(acldir):
+    try:
+       logger.info("Checking if Directory "+acldir+" Exists ")
+       if os.path.isdir(acldir):
+           logger.info("Directory "+acldir+" Exists")
+           ACL_DIR_STATUS=True
+       else: 
+            logger.info ("Creating "+acldir+"  Directory !")
+            os.makedirs(acldir)
+            ACL_DIR_STATUS=True
+    except Exception as e: 
+           logger.info(" Error Occured While creating a dir " +str (e))
+           logger.info("Directory Status is " + DIR_STATUS)
+    return ACL_DIR_STATUS
+
+
+def DownloadBlackListFile(ACL_DIR_STATUS,BucketName,FileName):
+      try:
+         if ACL_DIR_STATUS ==True:
+                start_time = datetime.now().isoformat()
+                logger.info('start time '+start_time)
+                logger.info("Checking if domain File exists !")
+                if os.path.isfile('/etc/squid/acls/blocked.domains.acl'):
+                     FILE_STATUS=True
+                     logger.info("Since File Exists will download file temporarirly and compare with existing file  for changes !")
+                     logger.info("Trying to Download File !")
+                     s3 = boto3.client('s3')
+                     s3.download_file(BucketName,FileName, '/tmp/blocked.domains.acl')
+                     logger.info("File downloaded sucessfully !")
+                     logger.info("Checking Hash of Existing file with new FIle for changes !")
+                     existingDomainHash= hashlib.md5(open('/etc/squid/acls/blocked.domains.acl', 'rb').read()).hexdigest()
+                     NewDomainFileHash= hashlib.md5(open('/tmp/blocked.domains.acl', 'rb').read()).hexdigest()
+                     logger.info("Existing Domain file Hash is " +str(existingDomainHash))
+                     logger.info('\n')
+                     logger.info("New Domain file Hash is " +str(NewDomainFileHash))
+                     
+                      
+                     if existingDomainHash == NewDomainFileHash:
+                          logger.info("Both Files are same No need to Repalce the file !")
+                          logger.info("Deleting Downloaded file !")
+                          os.remove("/tmp/blocked.domains.acl")
+                          logger.info("File Deleted Sucessfully from /tmp folder")
+                          pass
+                     else:
+                        logger.info(" The cheksum is different will copy the file and restart service !")
+                        logger.info(" Attempting to copy the file !")
+                        os.system('cp /tmp/blocked.domains.acl /etc/squid/acls/blocked.domains.acl')
+                        logger.info("File Copied Succesfully !")
+                        logger.info("Since New Domains are added will attempt to reload configuration for squid to block new domains !")
+                        os.system("sudo service squid reload")
+                        logger.info("Service Reloaded Sucessfully !")
+		        pass 
+         
+                else:
+                   logger.info(" Block List Domain file Does not exist will download the file to /etc/squid/acls'")
+                   s3 = boto3.client('s3')
+                   s3.download_file(BucketName,FileName, '/etc/squid/acls/blocked.domains.acl')
+                   logger.info("File downloaded sucessfully !")       
+
+         else: 
+             logger.info (" DIRECTORY /etc/squid/acls does not Exist . Aborting Download !")
+             FILE_STATUS = False
+      except Exception as e:
+              print (str(e))    
+      return FILE_STATUS
+
+
+#def CheckSquidConfig():
+ #    try: 
+  #      logger.info("Checking if SquidConfig File Exists !")
+   #     if os.path.isfile('/etc/squid/squid.conf'):
+         #     logger.info("Config File Exists ! Now trying to add ACL in Squid.conf !")
+          #    logger.info("Checking if Entry already exists !")
+                            
+
+
+
+BucketName="novartisdmztstgbieinfra002"
+FileName="blocked.domains.acl"
+
+testDir=SquidAclDirCheck(acldir)
+DownloadBlackListFile(testDir,BucketName,FileName)
+
